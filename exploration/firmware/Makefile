@@ -20,7 +20,7 @@ FX3PFWROOT=$(FX3FWROOT)/u3p_firmware
 
 include $(FX3FWROOT)/common/fx3_build_config.mak
 
-MODULE = cyfxflashprog
+MODULE = exploration
 
 SOURCE += $(MODULE).c 
 SOURCE += cyfxusbdscr.c 

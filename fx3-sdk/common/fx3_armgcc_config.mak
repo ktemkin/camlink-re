@@ -37,7 +37,7 @@ else
     LDFLAGS += -T $(FX3FWROOT)/common/fx3_512k.ld
 endif
 
-LDFLAGS += -Wl,--gc-sections -Wl,--no-wchar-size-warning -Wl,-Map $(MODULE).map
+LDFLAGS += -Wl,--gc-sections -Wl,--no-wchar-size-warning #-Wl,-Map $(MODULE).map
 
 EXEEXT		= elf
 

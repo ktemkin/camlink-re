@@ -40,7 +40,7 @@ CyU3PThread appThread;                  /* Application thread object. */
 CyBool_t glIsApplnActive = CyFalse;
 
 /* Firmware ID variable that may be used to verify flash programmer firmware. */
-const uint8_t glFirmwareID[32] __attribute__ ((aligned (32))) = { 'F', 'X', '3', 'P', 'R', 'O', 'G', '\0' };
+const uint8_t glFirmwareID[32] __attribute__ ((aligned (32))) = { 'C', 'A', 'M', 'L', 'I', 'N', 'K', '\0' };
 
 uint8_t glEp0Buffer[4096] __attribute__ ((aligned (32)));
 
