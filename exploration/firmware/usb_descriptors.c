@@ -32,7 +32,7 @@
  * CyU3PDeviceCacheControl for more information.
  */
 
-#include "cyfxflashprog.h"
+#include "exploration.h"
 
 /* Standard device descriptor for USB 3.0 */
 const uint8_t CyFxUSB30DeviceDscr[] __attribute__ ((aligned (32))) =

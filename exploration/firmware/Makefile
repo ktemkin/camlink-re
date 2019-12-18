@@ -1,37 +1,29 @@
-## Copyright Cypress Semiconductor Corporation, 2010-2011,
-## All Rights Reserved
-## UNPUBLISHED, LICENSED SOFTWARE.
-##
-## CONFIDENTIAL AND PROPRIETARY INFORMATION
-## WHICH IS THE PROPERTY OF CYPRESS.
-##
-## Use of this file is governed
-## by the license agreement included in the file
-##
-##      <install>/license/license.txt
-##
-## where <install> is the Cypress software
-## installation root directory path.
-##
 
+#
+# Use our local copy of the Cypress FX3 SDK.
+#
 FX3FWROOT=../../fx3-sdk
 FX3PFWROOT=$(FX3FWROOT)/u3p_firmware
-
-
 include $(FX3FWROOT)/common/fx3_build_config.mak
 
+# Specify the core sources for our firmware.
 MODULE = exploration
+SOURCE += \
+	$(MODULE).c \
+	usb_descriptors.c \
+	application.c \
+	spi_flash.c \
+	sanity.c
 
-SOURCE += $(MODULE).c 
-SOURCE += cyfxusbdscr.c 
-
+# Set up the variables used by the Cypress makefiles.
 C_OBJECT=$(SOURCE:%.c=./%.o)
 A_OBJECT=$(SOURCE_ASM:%.S=./%.o)
+EXES    = $(MODULE).elf
 
-EXES = $(MODULE).elf
-
+# By default, build a Cypress image.
 all: $(MODULE).img
 
+# Synthetic target: program the relevant image via the FX3 bootloader and pyfwup.
 program: $(MODULE).img
 	fx3load $<
 
@@ -55,5 +47,3 @@ clean:
 
 
 compile: $(C_OBJECT) $(A_OBJECT) $(EXES)
-
-#[]#

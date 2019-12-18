@@ -1,0 +1,11 @@
+clang
+-g 
+-DTX_ENABLE_EVENT_TRACE 
+-DDEBUG 
+-DCYU3P_FX3=1 
+-D__CYU3P_TX__=1 
+-Ifx3-sdk/u3p_firmware/inc
+-O0 
+-Wall 
+-mcpu=arm926ej-s 
+-mthumb-interwork
