@@ -45,6 +45,7 @@ enum {
  * Constants for each of the vendor requests.
  */
 enum {
+    // FPGA configuration commands.
     REQUEST_READ_FPGA_ID = 0x50,
 
     // Cypress standard commands.
@@ -62,7 +63,16 @@ enum {
  * Constants for each of the FPGA configuration opcodes.
  */
 enum {
-    CONFIGURATION_OP_GET_IDCODE = 0xE0,
+    // Information requests.
+    CONFIGURATION_OP_GET_IDCODE      = 0xE0,
+    CONFIGURATION_OP_READ_STATUS     = 0x3C,
+
+    // In-system configuration operations.
+    CONFIGURATION_OP_ISC_ENABLE      = 0xC6,
+    CONFIGURATION_OP_ISC_ERASE       = 0x0E,
+    CONFIGURATION_OP_SET_ADDRESS     = 0x46,
+    CONFIGURATION_OP_BITSTREAM_BURST = 0x7a,
+    CONFIGURATION_OP_ISC_DISABLE     = 0x26
 };
 
 
@@ -154,29 +164,113 @@ void spi_exchange_data(uint8_t *rx_buffer, uint8_t *tx_buffer, size_t length)
 }
 
 
-
-void handle_fpga_id_request(void)
+/**
+ * Performs a simple FPGA 'in' command, which issues a single opcode, and then reads a four-byte result.
+ */
+uint32_t fpga_simple_command(uint8_t opcode, bool get_response)
 {
     uint8_t result[4];
+    uint32_t *result_int = (uint32_t *)result;
 
+    // Start our transaction by asserting CS and sending the opcode.
     assert_cs();
+    spi_exchange_byte(opcode);
 
-    spi_exchange_byte(CONFIGURATION_OP_GET_IDCODE);
-
-    // Per the configuration guide, wait 24 bit times before reading our response.
+    // Per the configuration guide, wait 24 cycles before reading our response.
     spi_exchange_byte(0x00);
     spi_exchange_byte(0x00);
     spi_exchange_byte(0x00);
 
-    for (unsigned i = 0; i < sizeof(result); ++i) {
-        result[i] = spi_exchange_byte(0x00);
+    // Read the response...
+    if (get_response) {
+        for (unsigned i = 0; i < sizeof(result); ++i) {
+            result[i] = spi_exchange_byte(0x00);
+        }
     }
 
+    // ... terminate the transaction ...
     release_cs();
 
-    send_on_ep0(result, sizeof(result));
+    // ... and return the result.
+    return *result_int;
 }
 
+
+/**
+ * Handles a request that receives the FPGA's ID.
+ */
+void handle_fpga_id_request(void)
+{
+    uint32_t idcode = fpga_simple_command(CONFIGURATION_OP_GET_IDCODE, true);
+    send_on_ep0(&idcode, sizeof(idcode));
+}
+
+
+uint32_t fpga_get_status(void)
+{
+    return fpga_simple_command(CONFIGURATION_OP_READ_STATUS, true);
+}
+
+
+void fpga_wait_for_operation_completion(void)
+{
+
+}
+
+
+/**
+ * Handles a request to start FPGA configuration.
+ */
+void handle_start_fpga_configuration_request(void)
+{
+    // Enable in-system configuration mode.
+    fpga_simple_command(CONFIGURATION_OP_ISC_ENABLE, false);
+
+    // Erase the device's configuration SRAM.
+    fpga_simple_command(CONFIGURATION_OP_ISC_ERASE, false);
+    fpga_wait_for_operation_completion();
+
+    // Start at the beginning of our configuration.
+    fpga_simple_command(CONFIGURATION_OP_SET_ADDRESS, false);
+
+    // Prepare to scan out the bitstream itself.
+    // We'll issue the opcode and the required 24-bits of zeroes, but
+    // leave the configuration channel open for bitstream transmission.
+    assert_cs();
+    spi_exchange_byte(CONFIGURATION_OP_BITSTREAM_BURST);
+    spi_exchange_byte(0x00);
+    spi_exchange_byte(0x00);
+    spi_exchange_byte(0x00);
+}
+
+
+
+/**
+ * Handles a request to finish FPGA configuration.
+ */
+void handle_fpga_bitstream_request(uint16_t length)
+{
+    int rc = receive_on_ep0(buffer, length, NULL);
+    if (!rc) {
+        for (int i = 0; i < length; ++i) {
+            spi_exchange_byte(buffer[i]);
+        }
+    }
+}
+
+
+/**
+ * Handles a request to finish FPGA configuration.
+ */
+void handle_finish_fpga_configuration_request(void)
+{
+    // Terminate the active bitstream scanout operation.
+    release_cs();
+
+    // FIXME: read the device's status here!
+
+    fpga_simple_command(CONFIGURATION_OP_ISC_ENABLE, false);
+}
 
 
 /**
