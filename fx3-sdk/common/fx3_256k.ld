@@ -112,7 +112,6 @@ SECTIONS
 	.ARM.exidx :
 	{
 		*(.ARM.exidx* .gnu.linkonce.armexidx.*)
-		. = ALIGN(4);
 	} > DATA
 	__exidx_end = .;
 }
