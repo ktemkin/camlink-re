@@ -45,15 +45,20 @@ enum {
  * Constants for each of the vendor requests.
  */
 enum {
-    REQUEST_READ_FPGA_ID = 0x50,
+    // FPGA configuration commands.
+    REQUEST_READ_FPGA_ID              = 0x50,
+    REQUEST_READ_FPGA_STATUS          = 0x51,
+    REQUEST_START_FPGA_CONFIGURATION  = 0x52,
+    REQUEST_STREAM_FPGA_CONFIGURATION = 0x53,
+    REQUEST_FINISH_FPGA_CONFIGURATION = 0x54,
 
     // Cypress standard commands.
-    REQUEST_GET_FIRMWARE_ID = 0xB0,
+    REQUEST_GET_FIRMWARE_ID           = 0xB0,
 
     // SPI flash.
-    REQUEST_SPI_FLASH_WRITE = 0xC2,
-    REQUEST_SPI_FLASH_READ  = 0xC3,
-    REQUEST_SPI_FLASH_ERASE = 0xC4
+    REQUEST_SPI_FLASH_WRITE           = 0xC2,
+    REQUEST_SPI_FLASH_READ            = 0xC3,
+    REQUEST_SPI_FLASH_ERASE           = 0xC4
    
 };
 
@@ -62,8 +67,28 @@ enum {
  * Constants for each of the FPGA configuration opcodes.
  */
 enum {
-    CONFIGURATION_OP_GET_IDCODE = 0xE0,
+    // Control requests.
+    CONFIGURATION_OP_REFRESH         = 0x79,
+
+    // Information requests.
+    CONFIGURATION_OP_GET_IDCODE      = 0xE0,
+    CONFIGURATION_OP_READ_STATUS     = 0x3C,
+    CONFIGURATION_OP_CHECK_BUSY      = 0xF0,
+
+    // In-system configuration operations.
+    CONFIGURATION_OP_ISC_ENABLE      = 0xC6,
+    CONFIGURATION_OP_ISC_ERASE       = 0x0E,
+    CONFIGURATION_OP_SET_ADDRESS     = 0x46,
+    CONFIGURATION_OP_BITSTREAM_BURST = 0x7a,
+    CONFIGURATION_OP_ISC_DISABLE     = 0x26
 };
+
+/**
+ * FPGA status register flags.
+ */
+ enum {
+     FPGA_STATUS_FLAG_DONE = (1 << 8)
+ };
 
 
 /**
@@ -102,7 +127,7 @@ static void half_bit_delay(void)
  * @param bit_to_send True iff this SPI cycle should issue a logic '1'.
  * @return True iff the device provided a logic '1' to read.
  */
-bool spi_exchange_bit(bool bit_to_send)
+bool fpga_exchange_bit(bool bit_to_send)
 {
     bool value_read;
 
@@ -125,13 +150,13 @@ bool spi_exchange_bit(bool bit_to_send)
 /**
  * Sends and receives a single byte over our bitbanged SPI bus.
  */
-uint8_t spi_exchange_byte(uint8_t to_send)
+uint8_t fpga_exchange_byte(uint8_t to_send)
 {
     uint8_t received = 0;
 
     for (unsigned i = 0; i < 8; ++i) {
         bool bit_to_send = !!(to_send & 0b10000000);
-        bool bit_received = spi_exchange_bit(bit_to_send);
+        bool bit_received = fpga_exchange_bit(bit_to_send);
 
         // Add the newly received bit to our byte, and move forward in the byte to transmit/
         received = (received << 1) | (bit_received ? 1 : 0);
@@ -146,35 +171,170 @@ uint8_t spi_exchange_byte(uint8_t to_send)
  * Transmits and receives a collection of bytes over the SPI bus.
  * Does not handle CS assertion/de-assertion.
  */
-void spi_exchange_data(uint8_t *rx_buffer, uint8_t *tx_buffer, size_t length)
+void fpga_exchange_data(uint8_t *rx_buffer, uint8_t *tx_buffer, size_t length)
 {
     for (size_t i = 0; i < length; ++i) {
-        rx_buffer[i] = spi_exchange_byte(tx_buffer[i]);
+        rx_buffer[i] = fpga_exchange_byte(tx_buffer[i]);
     }
 }
 
 
+void fpga_send_opcode(uint8_t opcode)
+{
+    fpga_exchange_byte(opcode);
 
-void handle_fpga_id_request(void)
+    // Per the configuration guide, wait 24 cycles before reading our response.
+    fpga_exchange_byte(0x00);
+    fpga_exchange_byte(0x00);
+    fpga_exchange_byte(0x00);
+}
+
+
+/**
+ * Performs a simple FPGA 'in' command, which issues a single opcode, and then reads a four-byte result.
+ */
+uint32_t fpga_simple_command(uint8_t opcode, bool get_response)
 {
     uint8_t result[4];
+    uint32_t *result_int = (uint32_t *)result;
 
+    // Start our transaction by asserting CS and sending the opcode.
     assert_cs();
+    fpga_send_opcode(opcode);
 
-    spi_exchange_byte(CONFIGURATION_OP_GET_IDCODE);
-
-    // Per the configuration guide, wait 24 bit times before reading our response.
-    spi_exchange_byte(0x00);
-    spi_exchange_byte(0x00);
-    spi_exchange_byte(0x00);
-
-    for (unsigned i = 0; i < sizeof(result); ++i) {
-        result[i] = spi_exchange_byte(0x00);
+    // Read the response...
+    if (get_response) {
+        for (unsigned i = 0; i < sizeof(result); ++i) {
+            result[i] = fpga_exchange_byte(0x00);
+        }
     }
 
+    // ... terminate the transaction ...
     release_cs();
 
-    send_on_ep0(result, sizeof(result));
+    // ... and return the result.
+    return *result_int;
+}
+
+
+
+/**
+ * Requests the FPGA's status byte.
+ */
+uint32_t fpga_get_id(void)
+{
+    return fpga_simple_command(CONFIGURATION_OP_GET_IDCODE, true);
+}
+
+/**
+ * Requests the FPGA's status byte.
+ */
+uint32_t fpga_get_status(void)
+{
+    return fpga_simple_command(CONFIGURATION_OP_READ_STATUS, true);
+}
+
+
+/**
+ * Requests the FPGA's status byte.
+ */
+bool fpga_is_busy(void)
+{
+    uint8_t busy;
+
+    // Perform our core data exchange.
+    assert_cs();
+    fpga_send_opcode(CONFIGURATION_OP_CHECK_BUSY);
+    busy = fpga_exchange_byte(0x00);
+    release_cs();
+
+    return !!busy;
+}
+
+
+/**
+ * Waits for the FPGA to have completed its last operation.
+ */
+void fpga_wait_for_operation_completion(void)
+{
+    while (fpga_is_busy());
+}
+
+
+
+/* Convenience function that sends a uint32_t on EP0. */
+void send_uint32_on_ep0(uint32_t datum)
+{
+    send_on_ep0(&datum, sizeof(datum));
+}
+
+
+/**
+ * Handles a request to start FPGA configuration.
+ */
+void handle_start_fpga_configuration_request(void)
+{
+    // Trigger an FPGA reconfiguration.
+    fpga_simple_command(CONFIGURATION_OP_REFRESH, false);
+    fpga_wait_for_operation_completion();
+    CyU3PThreadSleep(1000);
+
+    // Enable in-system configuration mode.
+    fpga_simple_command(CONFIGURATION_OP_ISC_ENABLE, false);
+
+    // Erase the device's configuration SRAM.
+    fpga_simple_command(CONFIGURATION_OP_ISC_ERASE, false);
+    fpga_wait_for_operation_completion();
+
+    // Start at the beginning of our configuration.
+    fpga_simple_command(CONFIGURATION_OP_SET_ADDRESS, false);
+
+    // Read the device's status, and include it as a response.
+    send_uint32_on_ep0(fpga_get_status());
+
+    // Prepare to scan out the bitstream itself.
+    // We'll issue the opcode and the required 24-bits of zeroes, but
+    // leave the configuration channel open for bitstream transmission.
+    assert_cs();
+    fpga_exchange_byte(CONFIGURATION_OP_BITSTREAM_BURST);
+    fpga_exchange_byte(0x00);
+    fpga_exchange_byte(0x00);
+    fpga_exchange_byte(0x00);
+}
+
+
+
+/**
+ * Handles a request to finish FPGA configuration.
+ */
+void handle_fpga_bitstream_request(uint16_t length)
+{
+    int rc = receive_on_ep0(buffer, length, NULL);
+    if (!rc) {
+        for (int i = 0; i < length; ++i) {
+            fpga_exchange_byte(buffer[i]);
+        }
+    }
+}
+
+
+/**
+ * Handles a request to finish FPGA configuration.
+ */
+int handle_finish_fpga_configuration_request(void)
+{
+    uint32_t status;
+ 
+    // Terminate the active bitstream scanout operation.
+    release_cs();
+    status = fpga_get_status();
+
+    // If the operation completed successfully, drop out of configuration mode.
+    fpga_simple_command(CONFIGURATION_OP_ISC_DISABLE, false);
+    
+    // Either way, send back the status word we read.
+    send_uint32_on_ep0(status);
+    return 0;
 }
 
 
@@ -184,60 +344,75 @@ void handle_fpga_id_request(void)
  */
 int handle_vendor_request(uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length)
 {
-    int status;
+    int status = 0;
 
-        switch (request)
-        {
+    switch (request)
+    {
 
-            // General firmware ID query.
-            case REQUEST_GET_FIRMWARE_ID:
-                send_on_ep0 ("CAMLINK\0", 8);
-                break;
-
-            // FPGA ID query.
-            case REQUEST_READ_FPGA_ID:
-                handle_fpga_id_request();
-                break;
+        // General firmware ID query.
+        case REQUEST_GET_FIRMWARE_ID:
+            send_on_ep0 ("CAMLINK\0", 8);
+            return 0;
 
 
-            // SPI flash program.
-            case REQUEST_SPI_FLASH_WRITE:
-                status = receive_on_ep0(buffer, length, NULL);
-                if (status == CY_U3P_SUCCESS) {
-                    status = spi_flash_program(index, length, buffer, false);
-                }
-                break;
+        // Simple queries.
+        case REQUEST_READ_FPGA_ID:
+            send_uint32_on_ep0(fpga_get_id());
+            return 0;
+        case REQUEST_READ_FPGA_STATUS:
+            send_uint32_on_ep0(fpga_get_status());
+            return 0;
 
 
-            // SPI flash read.
-            case REQUEST_SPI_FLASH_READ:
-                memset(buffer, 0, sizeof (buffer));
-                status = spi_flash_program(index, length, buffer, true);
-                if (status == CY_U3P_SUCCESS) {
+        // FPGA configuration.
+        case REQUEST_START_FPGA_CONFIGURATION:
+            handle_start_fpga_configuration_request();
+        case REQUEST_STREAM_FPGA_CONFIGURATION:
+            handle_fpga_bitstream_request(length);
+            return 0;
+
+        case REQUEST_FINISH_FPGA_CONFIGURATION:
+            return handle_finish_fpga_configuration_request();
+
+
+        // SPI flash program.
+        case REQUEST_SPI_FLASH_WRITE:
+            status = receive_on_ep0(buffer, length, NULL);
+            if (status == CY_U3P_SUCCESS) {
+                status = spi_flash_program(index, length, buffer, false);
+            }
+            return status;
+
+
+        // SPI flash read.
+        case REQUEST_SPI_FLASH_READ:
+            memset(buffer, 0, sizeof (buffer));
+            status = spi_flash_program(index, length, buffer, true);
+            if (status == CY_U3P_SUCCESS) {
+                send_on_ep0(buffer, length);
+            }
+            return status;
+
+
+        // SPI flash erase or get status.
+        // FIXME: separate these
+        case REQUEST_SPI_FLASH_ERASE:
+            status = spi_flash_erase_sector(value, (index & 0xFF), buffer);
+            if (status == 0)
+            {
+                if (value == 0) {
                     send_on_ep0(buffer, length);
+                } else {
+                    send_ep0_ack();
                 }
-                break;
+            }
+            return status;
 
+        default:
+            return -1;
+    }
 
-            // SPI flash erase or get status.
-            // FIXME: separate these
-            case REQUEST_SPI_FLASH_ERASE:
-                status = spi_flash_erase_sector(value, (index & 0xFF), buffer);
-                if (status == 0)
-                {
-                    if (value == 0) {
-                        send_on_ep0(buffer, length);
-                    } else {
-                        send_ep0_ack();
-                    }
-                }
-                break;
-
-            default:
-                return false;
-        }
-
-    return !!status;
+    return status;
 }
 
 /**

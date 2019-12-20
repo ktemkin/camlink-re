@@ -24,6 +24,12 @@ class CamlinkExplorer:
 
 
     # Request numbers.
+    REQUEST_READ_FPGA_ID       = 0x50
+    REQUEST_READ_FPGA_STATUS   = 0x51
+    REQUEST_START_FPGA_CONFIG  = 0x52
+    REQUEST_STREAM_FPGA_CONFIG = 0x53
+    REQUEST_STOP_FPGA_CONFIG   = 0x54
+
     REQUEST_READ_ID  = 0xb0
 
     REQUEST_SPI_FLASH_WRITE = 0xc2
@@ -185,10 +191,44 @@ class CamlinkExplorer:
 
 
 
+    def configure(self, bitstream_filename):
+        """ Configures the FPGA with the provided bitstream file. """
+
+        total_sent = 0
+
+        # Start the configuration, and ensure we wind up in ISC mode.
+        status = self._in_request(self.REQUEST_START_FPGA_CONFIG, length=4)
+        assert(status == b"\x00\x00\x0e\x00")
+
+
+        # Stream out the bitstream...
+        with open(bitstream_filename, 'rb') as f:
+
+            while True:
+                print("Sent {} bytes.".format(total_sent), end="\r")
+                chunk = f.read(4096)
+
+                if not chunk:
+                    break
+
+                self._out_request(self.REQUEST_STREAM_FPGA_CONFIG, chunk)
+                total_sent += len(chunk)
+
+
+        # ... and complete configuration.
+        print()
+        print()
+        status = self._in_request(self.REQUEST_STOP_FPGA_CONFIG, length=4)
+        assert(status == b"\x00\x20\x0f\x00")
+
+
+
 
 #
 # Main routines.
 #
 
 device = CamlinkExplorer()
-print(device.read_fpga_id())
+print("Read device ID: {}".format(device.read_fpga_id()))
+
+device.configure('bitstream.bit')
