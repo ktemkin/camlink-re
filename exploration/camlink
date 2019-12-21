@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+# 
+#  Note: this license applies to this file. Other files in this project
+#  may be licensed differently, because Cypress likes to reserve their rights.
+# 
+#  Or maybe not; I'm not a lawyer, I'm probably not in your jurisdiction, and I
+#  definitely don't believe software patents and restricted examples are helping anyone.
+# 
+#       DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
+#                    Version 2, December 2004 
+# 
+# Copyright (C) 2019 Katherine Temkin <k@ktemkin.com>, if you're not angry with the code
+# Copyright (C) 2019 Someone Else if you are angry and/or want to send me a C&D
+# 
+# Everyone is permitted to copy and distribute verbatim or modified 
+# copies of this license document, and changing it is allowed as long 
+# as the name is changed. 
+# 
+#            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
+#   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION 
+# 
+#  0. You just DO WHAT THE FUCK YOU WANT TO.
+#
+
+import os
+import sys
+import time
+from argparse import ArgumentParser
+
+import usb.core
+from tqdm import tqdm
+from fwup.fx3 import FX3Target
+
+
+class CamlinkDevice:
+    """ Class for working with the Camlink exploration firmware. """
+
+    VENDOR_ID  = 0x04b4
+    PRODUCT_ID = 0x4720
+
+    FPGA_DONE_MASK = (1 << 8)
+
+    # Flash size parameters.
+    # These are forced to be fixed by Cypress.
+    FLASH_SIZE         = 4194304
+    FLASH_OP_SIZE      = 4096
+    FLASH_SECTOR_SIZE  = 64 * 1024
+    FLASH_SIZE_OPS     = FLASH_SIZE / FLASH_OP_SIZE
+
+    # Request types used for our standard requests.
+    REQUEST_TYPE_OUT = 0x40
+    REQUEST_TYPE_IN  = 0xc0
+
+
+    # Request numbers.
+    REQUEST_READ_FPGA_ID       = 0x50
+    REQUEST_READ_FPGA_STATUS   = 0x51
+    REQUEST_START_FPGA_CONFIG  = 0x52
+    REQUEST_STREAM_FPGA_CONFIG = 0x53
+    REQUEST_STOP_FPGA_CONFIG   = 0x54
+
+    REQUEST_READ_ID  = 0xb0
+
+    REQUEST_SPI_FLASH_WRITE = 0xc2
+    REQUEST_SPI_FLASH_READ  = 0xc3
+    REQUEST_SPI_FLASH_BUSY  = 0xc4
+    REQUEST_SPI_FLASH_ERASE = 0xc4
+
+
+    def __init__(self):
+        """ Create a new connection to a Camlink explorer firmware. """
+        self.device = usb.core.find(idVendor=self.VENDOR_ID, idProduct=self.PRODUCT_ID)
+
+        if self.device is None:
+            raise IOError("could not find a device in exploration-firmware mode!")
+
+        # Ensure that the device we've connected to is a valid CAMLINK explorer firmware.
+        assert(self.get_firmware_id() == b"CAMLINK\0")
+
+
+    def _in_request(self, request, length=0, index=0, value=0, timeout=3000):
+        """ Performs a IN control request to the relevant firmware. """
+
+        result = self.device.ctrl_transfer(self.REQUEST_TYPE_IN, request, value, index, length, timeout=timeout)
+        return bytes(result)
+
+
+    def _out_request(self, request, data=None, index=0, value=0, timeout=3000):
+        """ Performs a IN control request to the relevant firmware. """
+        self.device.ctrl_transfer(self.REQUEST_TYPE_OUT, request, value, index, data, timeout=timeout)
+
+
+    def get_firmware_id(self):
+        """ Returns a byte-string containing the firmware ID for the given explorer firmware. """
+        return self._in_request(self.REQUEST_READ_ID, 8)
+
+
+    def read_spi_flash_chunk(self, address, length=4096):
+        """ reads up to 4096b of the device's spi flash. """
+        return self._in_request(self.REQUEST_SPI_FLASH_READ, length=length, index=(address // 256))
+
+
+    def write_spi_flash_chunk(self, address, data):
+        """ Writes up to 4096B of the device's SPI flash. """
+        self._out_request(self.REQUEST_SPI_FLASH_WRITE, data, index=(address // 256))
+        self._wait_for_operation_complete()
+
+
+    def dump_spi_flash(self, file_or_filename, start_address=0, length=None, progress_callback=None):
+        """ Reads out the device's SPI flash. """
+
+        address = start_address
+        if length is None: 
+            length = self.FLASH_SIZE
+
+        if isinstance(file_or_filename, str):
+            target = open(file_or_filename, "wb")
+            close_after = True
+        else:
+            target = file_or_filename
+            close_after = False
+
+        while length > 0:
+            data = self.read_spi_flash_chunk(address)
+            target.write(data)
+
+            if progress_callback:
+                progress_callback(len(data))
+
+            length -= len(data)
+            address += len(data)
+
+
+        if close_after:
+            target.close()
+
+
+    def erase_spi_flash_sector(self, address):
+        """ Erases an SPI flash sector. """
+        self._out_request(self.REQUEST_SPI_FLASH_ERASE, index=(address / self.FLASH_SECTOR_SIZE), value=1)
+        self._wait_for_operation_complete()
+
+
+
+    def erase_spi_flash(self, file_or_filename, start_address=0, length=None):
+        """ Erases the device's SPI flash. """
+
+        address = start_address
+        if length is None:
+            length = self.FLASH_SECTOR_SIZE - address
+
+        while length > 0:
+            self.erase_spi_flash_sector(address)
+            address += self.FLASH_SECTOR_SIZE
+            length -= self.FLASH_SECTOR_SIZE
+
+
+
+    def write_spi_flash(self, file_or_filename, start_address=0, length=None, progress_callback=None):
+        """ Reads out the device's SPI flash. """
+
+        address = start_address
+        if length is None: 
+            length = self.FLASH_SIZE - address
+
+        # Start off by erasing the device's SPI flash.
+        self.erase_spi_flash(start_address, length)
+
+        if isinstance(file_or_filename, str):
+            target = open(file_or_filename, "rb")
+            close_after = True
+        else:
+            target = file_or_filename
+            close_after = False
+
+        while length > 0:
+            data = target.read(4096)
+            self.write_spi_flash_chunk(address, data)
+
+            length -= 4096
+            address += len(data)
+
+            if progress_callback:
+                progress_callback(len(data))
+
+        if close_after:
+            target.close()
+
+
+    def _flash_is_busy(self):
+        """ Returns true for as long as the SPI flash is busy. """
+        return (self._in_request(self.REQUEST_SPI_FLASH_BUSY, length=1) != b"\0")
+
+
+    def _wait_for_operation_complete(self):
+        """ Waits until the SPI flash reports being idle. """
+
+        while self._flash_is_busy():
+            pass
+
+
+    def clear_boot_magic(self):
+        """ Removes the CY boot magic from the target flash page; allowing us to boot to the Cypress bootloader. """
+
+        # ... Read the first page...
+        page_data = bytearray(self.read_spi_flash_chunk(0, length=256))
+
+        # ... clear the first two bytes...
+        page_data[0] = 0
+        page_data[1] = 0
+
+        # ... and write the data back.
+        # Note that since we didn't perform an erase cycle, this should just zero out
+        # the first two bytes. :)
+        self.write_spi_flash_chunk(0, page_data)
+
+
+    def read_fpga_id(self):
+        """ Returns the device's FPGA's IDCODE. """
+        raw_id = self._in_request(self.REQUEST_READ_FPGA_ID, length=4)
+        return int.from_bytes(raw_id, byteorder='big')
+
+
+
+    def configure(self, bitstream, progress_callback=None):
+        """ Configures the FPGA with the provided bitstream data. """
+
+        bitstream = bytearray(bitstream)
+
+        # Start the configuration, and ensure we wind up in ISC mode.
+        self._in_request(self.REQUEST_START_FPGA_CONFIG, length=4)
+
+        # Stream out the bitstream...
+        while bitstream:
+            chunk = bitstream[0:4096]
+            del bitstream[0:4096]
+
+            self._out_request(self.REQUEST_STREAM_FPGA_CONFIG, chunk)
+            if progress_callback:
+                progress_callback(len(chunk))
+
+
+        # ... and complete configuration.
+        int.from_bytes(self._in_request(self.REQUEST_STOP_FPGA_CONFIG, length=4), byteorder='big')
+
+        # FIXME: do some proper status checking, here
+        # verify that the DONE bit is set in the last result
+
+
+
+def try_to_find_camlink_device():
+
+    # Try once, unaided, to find the camlink device.
+    try:
+        device = CamlinkDevice()
+        return device
+    except IOError:
+        pass
+ 
+
+    sys.stderr.write("Can't find a Camlink device with targetable firmware.\n")
+    sys.stderr.write("Trying to upload the most likely image via the FX3 bootloader.\n")
+
+    # Attempt to load via the booloader. This is a fickle process, so we'll fail out on any issue.
+    try:
+        # Try to find firmware to program...
+        target_file = os.path.join(os.path.dirname(__file__), 'firmware', 'exploration.img')
+        with open(target_file, 'rb') as f:
+            program_data = f.read()
+
+        # ... and then try to program it to a device.
+        target = FX3Target()
+        with tqdm(total=len(program_data), ncols=80, unit='B', leave=False) as progress:
+            target.program(program_data, status_callback = lambda written, _ : progress.update(written))
+
+        sys.stderr.write("\nUploaded. Trying again.\n\n")
+        target.run_user_program()
+    except:
+        sys.stderr.write("Couldn't figure out how to get a device into a working state. Giving up.\n")
+        sys.stderr.write("Check your connections and firmware and try again?\n")
+        sys.exit(-1)
+
+    time.sleep(1)
+    return CamlinkDevice()
+
+
+
+
+
+#
+# Logging helpers.
+#
+
+def log_print(string):
+    print(string)
+    sys.stdout.flush()
+
+def log_quiet(string):
+    pass
+
+def log_error(string):
+    sys.stderr.write(string)
+    sys.stderr.write('\n')
+    sys.stderr.flush()
+
+
+def scan(device, log, args):
+    """ Prints known information about the device and firmware. """
+    print("Detected an FPGA with IDCODE: {:08x}.".format(device.read_fpga_id()))
+
+
+def configure(device, log, args):
+    """ Configures the local device with the provided bitstream. """
+
+    if args.filename is None:
+        log_error("You must provide a valid bit-file to configure.")
+
+    # Read the bitstream into memory.
+    with open(args.filename, 'rb') as f:
+        bitstream = f.read()
+
+    print('Configuring the attached FPGA with {} bytes.'.format(len(bitstream)))
+    sys.stdout.flush()
+
+    # Perform the actual configuration.
+    with tqdm(total=len(bitstream), ncols=80, unit='B', leave=False) as progress:
+        device.configure(bitstream, lambda delta : progress.update(delta))
+
+    print('\nDone.')
+
+
+def dump(device, log, args):
+    """ Dumps the device's SPI flash. """
+
+    log("Dumping the device's SPI flash.")
+    with tqdm(total=device.FLASH_SIZE, ncols=80, unit='B', leave=False) as progress:
+        device.dump_spi_flash(args.filename, progress_callback=lambda delta : progress.update(delta))
+
+
+def flash(device, log, args):
+    """ Writes the device's SPI flash. """
+
+    if args.filename is None:
+        log_error("You must provide a valid file to flash.")
+
+    # Read the bitstream into memory.
+    length = os.path.getsize(args.filename)
+
+    print('Flashing the SPI flash with {} bytes.'.format(length))
+    sys.stdout.flush()
+
+    # Perform the actual configuration.
+    with tqdm(total=length, ncols=80, unit='B', leave=False) as progress:
+        device.write_spi_flash(args.filename, progress_callback=lambda delta : progress.update(delta))
+
+    print('\nDone.')
+
+
+def force_dfu(device, log, args):
+    """ Clears the boot magic, forcing the device to fall back to the USB bootloader. """
+    device.clear_boot_magic()
+
+
+def main():
+
+    commands = {
+        'scan': scan,
+        'configure': configure,
+        'dump': dump,
+        'flash': flash,
+        'force_dfu': force_dfu
+    }
+
+
+    # Set up a simple argument parser.
+    parser = ArgumentParser(description="Utility for working with Camlink devices running the exploration firmware")
+    parser.add_argument('-v', '--verbose', action='store_true', help='make output more verbose')
+    parser.add_argument('command', choices=commands, help='the operation to complete')
+    parser.add_argument('filename', metavar="[filename]", nargs='?',
+                        help='the filename to work with, if necessary')
+
+
+    args = parser.parse_args()
+    device = try_to_find_camlink_device()
+
+    if args.command == 'scan':
+        args.verbose = True
+    elif args.filename == "-":
+        args.verbose = False
+    log_verbose = log_print if args.verbose else log_quiet
+
+    # Execute the relevant command.
+    command = commands[args.command]
+    command(device, log_verbose, args)
+
+if __name__ == '__main__':
+    main()
+

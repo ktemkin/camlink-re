@@ -168,6 +168,19 @@ uint8_t fpga_exchange_byte(uint8_t to_send)
 
 
 /**
+ * Sends and receives a single byte over our bitbanged SPI bus.
+ */
+void fpga_send_byte(uint8_t to_send)
+{
+
+    for (unsigned i = 0; i < 8; ++i) {
+        fpga_exchange_bit(to_send >> 7);
+        to_send <<= 1;
+    }
+}
+
+
+/**
  * Transmits and receives a collection of bytes over the SPI bus.
  * Does not handle CS assertion/de-assertion.
  */
@@ -181,12 +194,12 @@ void fpga_exchange_data(uint8_t *rx_buffer, uint8_t *tx_buffer, size_t length)
 
 void fpga_send_opcode(uint8_t opcode)
 {
-    fpga_exchange_byte(opcode);
+    fpga_send_byte(opcode);
 
     // Per the configuration guide, wait 24 cycles before reading our response.
-    fpga_exchange_byte(0x00);
-    fpga_exchange_byte(0x00);
-    fpga_exchange_byte(0x00);
+    fpga_send_byte(0x00);
+    fpga_send_byte(0x00);
+    fpga_send_byte(0x00);
 }
 
 
@@ -312,7 +325,7 @@ void handle_fpga_bitstream_request(uint16_t length)
     int rc = receive_on_ep0(buffer, length, NULL);
     if (!rc) {
         for (int i = 0; i < length; ++i) {
-            fpga_exchange_byte(buffer[i]);
+            fpga_send_byte(buffer[i]);
         }
     }
 }
@@ -374,7 +387,6 @@ int handle_vendor_request(uint8_t request_type, uint8_t request, uint16_t value,
         case REQUEST_FINISH_FPGA_CONFIGURATION:
             return handle_finish_fpga_configuration_request();
 
-
         // SPI flash program.
         case REQUEST_SPI_FLASH_WRITE:
             status = receive_on_ep0(buffer, length, NULL);
@@ -411,8 +423,6 @@ int handle_vendor_request(uint8_t request_type, uint8_t request, uint16_t value,
         default:
             return -1;
     }
-
-    return status;
 }
 
 /**

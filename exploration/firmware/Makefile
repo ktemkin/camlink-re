@@ -4,7 +4,9 @@
 #
 FX3FWROOT=../../fx3-sdk
 FX3PFWROOT=$(FX3FWROOT)/u3p_firmware
+CYCONFOPT=fx3_release
 include $(FX3FWROOT)/common/fx3_build_config.mak
+
 
 # Specify the core sources for our firmware.
 MODULE = exploration

@@ -28,14 +28,14 @@
 
 void set_gpio_value(uint8_t pin, bool is_high)
 {
-    CyU3PGpioSetValue(pin, is_high);
+    CyU3PGpioSimpleSetValue(pin, is_high);
 }
 
 
 bool get_gpio_value(uint8_t pin)
 {
     CyBool_t pin_value;
-    CyU3PGpioGetValue (pin, &pin_value);
+    CyU3PGpioSimpleGetValue (pin, &pin_value);
 
     return pin_value;
 }
