@@ -142,7 +142,7 @@ class CamlinkDevice:
 
 
 
-    def erase_spi_flash(self, file_or_filename, start_address=0, length=None):
+    def erase_spi_flash(self, start_address=0, length=None):
         """ Erases the device's SPI flash. """
 
         address = start_address
