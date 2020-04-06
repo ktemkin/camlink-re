@@ -137,12 +137,12 @@ class CamlinkDevice:
 
     def erase_spi_flash_sector(self, address):
         """ Erases an SPI flash sector. """
-        self._out_request(self.REQUEST_SPI_FLASH_ERASE, index=(address / self.FLASH_SECTOR_SIZE), value=1)
+        self._out_request(self.REQUEST_SPI_FLASH_ERASE, index=(address // self.FLASH_SECTOR_SIZE), value=1)
         self._wait_for_operation_complete()
 
 
 
-    def erase_spi_flash(self, file_or_filename, start_address=0, length=None):
+    def erase_spi_flash(self, start_address=0, length=None):
         """ Erases the device's SPI flash. """
 
         address = start_address
